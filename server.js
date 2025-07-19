@@ -126,53 +126,55 @@ getWindowRecordingArgs(sessionId, audioDevice) {
   const downloadsPath = path.join(os.homedir(), 'Downloads');
   const outputPath = path.join(downloadsPath, `${sessionId}.mp4`);
 
-  if (process.platform === 'win32') {
+  const platform = process.platform;
+
+  if (platform === 'win32') {
     return [
       '-y',
       '-f', 'gdigrab',
       '-framerate', '25',
       '-i', 'desktop',
       ...(audioDevice ? ['-f', 'dshow', '-i', `audio=${audioDevice}`] : []),
-
-      '-fflags', '+genpts',
-      '-use_wallclock_as_timestamps', '1',
-
       '-map', '0:v:0',
       ...(audioDevice ? ['-map', '1:a:0'] : []),
-
       '-c:v', 'libx264',
       '-preset', 'veryfast',
       '-crf', '23',
-
       ...(audioDevice ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']),
-
       '-pix_fmt', 'yuv420p',
       outputPath
     ];
   }
 
-  if (this.platform === 'darwin') {
+  if (platform === 'darwin') {
     return [
       '-y',
       '-f', 'avfoundation',
       '-framerate', '30',
       '-i', audioDevice ? `1:${audioDevice}` : '1:',
-
-      '-map', '0:v:0',
-      ...(audioDevice ? ['-map', '0:a:0'] : []),
-
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
       '-crf', '23',
-
       ...(audioDevice ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']),
-
       '-pix_fmt', 'yuv420p',
       outputPath
     ];
   }
 
-  throw new Error(`[Unsupported Platform] ${this.platform}`);
+  if (platform === 'linux') {
+    return [
+      '-y',
+      '-f', 'x11grab',
+      '-framerate', '25',
+      '-i', ':0.0', // May need to adjust this for your X display
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-pix_fmt', 'yuv420p',
+      outputPath
+    ];
+  }
+
+  throw new Error(`[Unsupported Platform] ${platform}`);
 }
 
 startFFmpegRecording(sessionId, audioDevice) {
