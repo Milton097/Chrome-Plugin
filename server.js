@@ -122,66 +122,61 @@ getAudioDevices() {
   });
 }
 
-// getWindowRecordingArgs(sessionId, audioDevice) {
-//   const downloadsPath = path.join(os.homedir(), 'Downloads');
-//   const outputPath = path.join(downloadsPath, `${sessionId}.mp4`);
-
-//   const ffmpegArgs = [
-//     '-y',
-
-//     // Video input: screen
-//     '-f', 'gdigrab',
-//     '-framerate', '30',
-//     '-i', 'desktop',
-
-//     // Audio input (optional)
-//     ...(audioDevice ? ['-f', 'dshow', '-i', `audio=${audioDevice}`] : []),
-
-//     // Input mapping
-//     ...(audioDevice ? ['-map', '0:v', '-map', '1:a'] : []),
-
-//     // Encoding
-//     '-c:v', 'libvpx-vp9',
-//     '-crf', '30',
-//     '-b:v', '1M',
-//     '-pix_fmt', 'yuv420p',
-//     ...(audioDevice ? ['-c:a', 'libopus', '-b:a', '128k'] : ['-an']),
-
-//     outputPath
-//   ];
-
-//   return ffmpegArgs;
-// }
-
-startFFmpegRecording(sessionId, audioDevice) {
+getWindowRecordingArgs(sessionId, audioDevice) {
   const downloadsPath = path.join(os.homedir(), 'Downloads');
   const outputPath = path.join(downloadsPath, `${sessionId}.mp4`);
 
-  const ffmpegArgs = [
-    '-y',
-    '-f', 'gdigrab',
-    '-framerate', '25',
-    '-i', 'desktop',
+  if (process.platform === 'win32') {
+    return [
+      '-y',
+      '-f', 'gdigrab',
+      '-framerate', '25',
+      '-i', 'desktop',
+      ...(audioDevice ? ['-f', 'dshow', '-i', `audio=${audioDevice}`] : []),
 
-    ...(audioDevice ? ['-f', 'dshow', '-i', `audio=${audioDevice}`] : []),
+      '-fflags', '+genpts',
+      '-use_wallclock_as_timestamps', '1',
 
-    // Sync timestamps
-    '-fflags', '+genpts',
-    '-use_wallclock_as_timestamps', '1',
+      '-map', '0:v:0',
+      ...(audioDevice ? ['-map', '1:a:0'] : []),
 
-    '-map', '0:v:0',
-    ...(audioDevice ? ['-map', '1:a:0'] : []),
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-crf', '23',
 
-    '-c:v', 'libx264',
-    '-preset', 'veryfast',
-    '-crf', '23',
+      ...(audioDevice ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']),
 
-    ...(audioDevice ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']),
+      '-pix_fmt', 'yuv420p',
+      outputPath
+    ];
+  }
 
-    '-pix_fmt', 'yuv420p',
+  if (this.platform === 'darwin') {
+    return [
+      '-y',
+      '-f', 'avfoundation',
+      '-framerate', '30',
+      '-i', audioDevice ? `1:${audioDevice}` : '1:',
 
-    outputPath
-  ];
+      '-map', '0:v:0',
+      ...(audioDevice ? ['-map', '0:a:0'] : []),
+
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-crf', '23',
+
+      ...(audioDevice ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']),
+
+      '-pix_fmt', 'yuv420p',
+      outputPath
+    ];
+  }
+
+  throw new Error(`[Unsupported Platform] ${this.platform}`);
+}
+
+startFFmpegRecording(sessionId, audioDevice) {
+  const ffmpegArgs = this.getWindowRecordingArgs(sessionId, audioDevice);
 
   const ffmpegProcess = spawn(this.ffmpegPath, ffmpegArgs);
 
@@ -193,9 +188,11 @@ startFFmpegRecording(sessionId, audioDevice) {
     console.error(`[❌] FFmpeg failed:`, err);
   });
 
-  return { ffmpegProcess, outputPath };
+  return {
+    ffmpegProcess,
+    outputPath: ffmpegArgs[ffmpegArgs.length - 1]
+  };
 }
-
 
 async startRecording(meetUrl, sessionId, options = {}) {
   try {
