@@ -463,8 +463,8 @@ app.listen(PORT, async () => {
   console.log(`[💻] Platform: ${os.platform()}`);
   
   // Check system requirements on startup
-  const requirements = await recorder.checkSystemRequirements();
-  console.log(`[🔍] System check:`, requirements);
+  // const requirements = await recorder.checkSystemRequirements();
+  // console.log(`[🔍] System check:`, requirements);
 });
 app.post('/api/ping', (req, res) => {
   res.json({ success: true, message: 'Backend is alive!' });
