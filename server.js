@@ -53,7 +53,6 @@ app.use((req, res, next) => {
 class MeetRecorderBackend {
   
   constructor() {
-    const getFFmpegPath = require('./getFFmpegPath'); // Ensure path matches actual file
     this.ffmpegPath = getFFmpegPath();
     this.activeSessions = new Map();
     // this.recordingsDir = path.join(__dirname, 'recordings');
