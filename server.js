@@ -56,12 +56,8 @@ class MeetRecorderBackend {
     this.ffmpegPath = getFFmpegPath();
     this.activeSessions = new Map();
     this.init();
-
-    if (!fs.existsSync(this.recordingsDir)) {
-      fs.mkdirSync(this.recordingsDir, { recursive: true });
-    }
     
-    this.checkFFmpegInstallation();
+    // this.checkFFmpegInstallation();
   }
   async init() {
     // await this.checkFFmpegPath();              // Set path if ffmpeg.exe is in local folder
@@ -97,7 +93,7 @@ async checkFFmpegInstallation() {
 
 getAudioDevices() {
   return new Promise((resolve, reject) => {
-    const ffmpeg = spawn('ffmpeg', ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy']);
+    const ffmpeg = spawn(this.ffmpegPath, ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy']);
     let stderr = '';
 
     ffmpeg.stderr.on('data', (data) => {
@@ -126,36 +122,36 @@ getAudioDevices() {
   });
 }
 
-getWindowRecordingArgs(sessionId, audioDevice) {
-  const downloadsPath = path.join(os.homedir(), 'Downloads');
-  const outputPath = path.join(downloadsPath, `${sessionId}.mp4`);
+// getWindowRecordingArgs(sessionId, audioDevice) {
+//   const downloadsPath = path.join(os.homedir(), 'Downloads');
+//   const outputPath = path.join(downloadsPath, `${sessionId}.mp4`);
 
-  const ffmpegArgs = [
-    '-y',
+//   const ffmpegArgs = [
+//     '-y',
 
-    // Video input: screen
-    '-f', 'gdigrab',
-    '-framerate', '30',
-    '-i', 'desktop',
+//     // Video input: screen
+//     '-f', 'gdigrab',
+//     '-framerate', '30',
+//     '-i', 'desktop',
 
-    // Audio input (optional)
-    ...(audioDevice ? ['-f', 'dshow', '-i', `audio=${audioDevice}`] : []),
+//     // Audio input (optional)
+//     ...(audioDevice ? ['-f', 'dshow', '-i', `audio=${audioDevice}`] : []),
 
-    // Input mapping
-    ...(audioDevice ? ['-map', '0:v', '-map', '1:a'] : []),
+//     // Input mapping
+//     ...(audioDevice ? ['-map', '0:v', '-map', '1:a'] : []),
 
-    // Encoding
-    '-c:v', 'libvpx-vp9',
-    '-crf', '30',
-    '-b:v', '1M',
-    '-pix_fmt', 'yuv420p',
-    ...(audioDevice ? ['-c:a', 'libopus', '-b:a', '128k'] : ['-an']),
+//     // Encoding
+//     '-c:v', 'libvpx-vp9',
+//     '-crf', '30',
+//     '-b:v', '1M',
+//     '-pix_fmt', 'yuv420p',
+//     ...(audioDevice ? ['-c:a', 'libopus', '-b:a', '128k'] : ['-an']),
 
-    outputPath
-  ];
+//     outputPath
+//   ];
 
-  return ffmpegArgs;
-}
+//   return ffmpegArgs;
+// }
 
 startFFmpegRecording(sessionId, audioDevice) {
   const downloadsPath = path.join(os.homedir(), 'Downloads');
@@ -209,8 +205,6 @@ async startRecording(meetUrl, sessionId, options = {}) {
     }
 
     console.log(`[🎬] Starting screen recording for session: ${sessionId}`);
-
-    // const outputPath = path.join(this.recordingsDir, `${sessionId}.mp4`);
 
   let audioDevice = options.audioDevice;
   if (!audioDevice) {
