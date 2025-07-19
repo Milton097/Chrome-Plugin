@@ -56,7 +56,7 @@ class MeetRecorderBackend {
   constructor() {
     this.ffmpegPath = getFFmpegPath();
     this.activeSessions = new Map();
-    this.init();
+    // this.init();
     
     // this.checkFFmpegInstallation();
   }
