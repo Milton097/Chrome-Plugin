@@ -126,15 +126,15 @@ getWindowRecordingArgs(sessionId, audioDevice) {
   const downloadsPath = path.join(os.homedir(), 'Downloads');
   const outputPath = path.join(downloadsPath, `${sessionId}.mp4`);
 
-  const platform = process.platform;
-
-  if (platform === 'win32') {
+  if (this.platform === 'win32') {
     return [
       '-y',
       '-f', 'gdigrab',
       '-framerate', '25',
       '-i', 'desktop',
       ...(audioDevice ? ['-f', 'dshow', '-i', `audio=${audioDevice}`] : []),
+      '-fflags', '+genpts',
+      '-use_wallclock_as_timestamps', '1',
       '-map', '0:v:0',
       ...(audioDevice ? ['-map', '1:a:0'] : []),
       '-c:v', 'libx264',
@@ -146,12 +146,14 @@ getWindowRecordingArgs(sessionId, audioDevice) {
     ];
   }
 
-  if (platform === 'darwin') {
+  if (this.platform === 'darwin') {
     return [
       '-y',
       '-f', 'avfoundation',
       '-framerate', '30',
       '-i', audioDevice ? `1:${audioDevice}` : '1:',
+      '-fflags', '+genpts',
+      '-use_wallclock_as_timestamps', '1',
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
       '-crf', '23',
@@ -161,20 +163,7 @@ getWindowRecordingArgs(sessionId, audioDevice) {
     ];
   }
 
-  if (platform === 'linux') {
-    return [
-      '-y',
-      '-f', 'x11grab',
-      '-framerate', '25',
-      '-i', ':0.0', // May need to adjust this for your X display
-      '-c:v', 'libx264',
-      '-preset', 'ultrafast',
-      '-pix_fmt', 'yuv420p',
-      outputPath
-    ];
-  }
-
-  throw new Error(`[Unsupported Platform] ${platform}`);
+  throw new Error(`[Unsupported Platform] ${this.platform}`);
 }
 
 startFFmpegRecording(sessionId, audioDevice) {
@@ -190,10 +179,10 @@ startFFmpegRecording(sessionId, audioDevice) {
     console.error(`[❌] FFmpeg failed:`, err);
   });
 
-  return {
-    ffmpegProcess,
-    outputPath: ffmpegArgs[ffmpegArgs.length - 1]
-  };
+  const downloadsPath = path.join(os.homedir(), 'Downloads');
+  const outputPath = path.join(downloadsPath, `${sessionId}.mp4`);
+
+  return { ffmpegProcess, outputPath };
 }
 
 async startRecording(meetUrl, sessionId, options = {}) {
