@@ -3,8 +3,33 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const { exec, spawn } = require('child_process');
+const { exec, spawn, execSync } = require('child_process');
 const os = require('os');
+function getFFmpegPath() {
+  try {
+    // Try globally installed ffmpeg first
+    const ffmpegCmd = os.platform() === 'win32' ? 'where ffmpeg' : 'which ffmpeg';
+    const globalPath = execSync(ffmpegCmd).toString().trim();
+
+    if (fs.existsSync(globalPath)) {
+      console.log(`[✅] FFmpeg found in system path: ${globalPath}`);
+      return globalPath;
+    }
+  } catch (e) {
+    // Fallback to local static binary
+    const ffmpegFileName = os.platform() === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+    const localPath = path.join(__dirname, 'ffmpeg', ffmpegFileName);
+
+    if (fs.existsSync(localPath)) {
+      console.log(`[✅] FFmpeg found in local folder: ${localPath}`);
+      return localPath;
+    }
+  }
+
+  throw new Error('❌ FFmpeg not found. Install globally or add a static binary to /ffmpeg');
+}
+
+module.exports = getFFmpegPath;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -24,21 +49,24 @@ app.use((req, res, next) => {
   next();
 });
 
+
 class MeetRecorderBackend {
+  
   constructor() {
-    this.ffmpegPath = 'ffmpeg'; 
+    const getFFmpegPath = require('./getFFmpegPath'); // Ensure path matches actual file
+    this.ffmpegPath = getFFmpegPath();
     this.activeSessions = new Map();
-    this.recordingsDir = path.join(__dirname, 'recordings');
+    // this.recordingsDir = path.join(__dirname, 'recordings');
     this.init();
 
-    if (!fs.existsSync(this.recordingsDir)) {
-      fs.mkdirSync(this.recordingsDir, { recursive: true });
-    }
+    // if (!fs.existsSync(this.recordingsDir)) {
+    //   fs.mkdirSync(this.recordingsDir, { recursive: true });
+    // }
     
     this.checkFFmpegInstallation();
   }
   async init() {
-    await this.checkFFmpegPath();              // Set path if ffmpeg.exe is in local folder
+    // await this.checkFFmpegPath();              // Set path if ffmpeg.exe is in local folder
     const isFFmpegOK = await this.checkFFmpegInstallation();
 
     console.log('[🔍] System check:', {
@@ -48,18 +76,18 @@ class MeetRecorderBackend {
     });
   }
 
-async checkFFmpegPath() {
-    const localFFmpeg = path.join(__dirname, 'ffmpeg.exe');
+// async checkFFmpegPath() {
+//     const localFFmpeg = path.join(__dirname, 'ffmpeg', 'ffmpeg.exe');
 
-    try {
-      await fs.promises.access(localFFmpeg);
-      this.ffmpegPath = localFFmpeg;
-      console.log(`[✅] Found FFmpeg at: ${this.ffmpegPath}`);
-    } catch {
-      this.ffmpegPath = 'ffmpeg';
-      console.log(`[✅] Looking for FFmpeg in PATH: ${this.ffmpegPath}`);
-    }
-  }
+//     try {
+//       await fs.promises.access(localFFmpeg);
+//       this.ffmpegPath = localFFmpeg;
+//       console.log(`[✅] Found FFmpeg at: ${this.ffmpegPath}`);
+//     } catch {
+//       this.ffmpegPath = 'ffmpeg';
+//       console.log(`[✅] Looking for FFmpeg in PATH: ${this.ffmpegPath}`);
+//     }
+//   }
 
 async checkFFmpegInstallation() {
   return new Promise(resolve => {
@@ -101,7 +129,7 @@ getAudioDevices() {
 }
 
 getWindowRecordingArgs(sessionId, audioDevice) {
-  const outputPath = path.join(this.recordingsDir, `${sessionId}.mp4`);
+  // const outputPath = path.join(this.recordingsDir, `${sessionId}.mp4`);
 
   const ffmpegArgs = [
     '-y',
@@ -124,14 +152,14 @@ getWindowRecordingArgs(sessionId, audioDevice) {
     '-pix_fmt', 'yuv420p',
     ...(audioDevice ? ['-c:a', 'libopus', '-b:a', '128k'] : ['-an']), // Use libopus for .mp4
 
-    outputPath
+    // outputPath
   ];
 
   return ffmpegArgs;
 }
 
 startFFmpegRecording(sessionId, audioDevice) {
-  const outputPath = path.join(this.recordingsDir, `${sessionId}.mp4`);
+  // const outputPath = path.join(this.recordingsDir, `${sessionId}.mp4`);
   
   const ffmpegArgs = [
     '-y',
@@ -156,7 +184,7 @@ startFFmpegRecording(sessionId, audioDevice) {
 
     '-pix_fmt', 'yuv420p',
 
-    outputPath
+    // outputPath
   ];
 
   const ffmpegProcess = spawn(this.ffmpegPath, ffmpegArgs);
@@ -181,7 +209,7 @@ async startRecording(meetUrl, sessionId, options = {}) {
 
     console.log(`[🎬] Starting screen recording for session: ${sessionId}`);
 
-    const outputPath = path.join(this.recordingsDir, `${sessionId}.mp4`);
+    // const outputPath = path.join(this.recordingsDir, `${sessionId}.mp4`);
 
   let audioDevice = options.audioDevice;
   if (!audioDevice) {
@@ -203,7 +231,7 @@ async startRecording(meetUrl, sessionId, options = {}) {
     });
 
     console.log(`[✅] Screen recording started successfully for session: ${sessionId}`);
-    return { success: true, sessionId, outputPath };
+    return { success: true, sessionId };
 
   } catch (error) {
     console.error(`[❌] Error starting recording:`, error);
@@ -253,7 +281,7 @@ async stopRecording(sessionId) {
     return {
       success: true,
       sessionId,
-      outputPath: session.outputPath,
+      // outputPath: session.outputPath,
       duration: durationMinutes
     };
 
@@ -276,25 +304,25 @@ async stopRecording(sessionId) {
     return recordings;
   }
 
-  getRecordingsList() {
-    const recordings = [];
-    if (fs.existsSync(this.recordingsDir)) {
-      const files = fs.readdirSync(this.recordingsDir);
-      files.forEach(file => {
-        if (file.endsWith('.mp4')) {
-          const filePath = path.join(this.recordingsDir, file);
-          const stats = fs.statSync(filePath);
-          recordings.push({
-            filename: file,
-            size: stats.size,
-            created: stats.birthtime,
-            modified: stats.mtime
-          });
-        }
-      });
-    }
-    return recordings;
-  }
+  // getRecordingsList() {
+  //   const recordings = [];
+  //   if (fs.existsSync(this.recordingsDir)) {
+  //     const files = fs.readdirSync(this.recordingsDir);
+  //     files.forEach(file => {
+  //       if (file.endsWith('.mp4')) {
+  //         const filePath = path.join(this.recordingsDir, file);
+  //         const stats = fs.statSync(filePath);
+  //         recordings.push({
+  //           filename: file,
+  //           size: stats.size,
+  //           created: stats.birthtime,
+  //           modified: stats.mtime
+  //         });
+  //       }
+  //     });
+  //   }
+  //   return recordings;
+  // }
 
   // New method to check system requirements
   async checkSystemRequirements() {
@@ -400,20 +428,20 @@ app.get('/api/recordings', (req, res) => {
   }
 });
 
-app.get('/api/download/:sessionId', (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const filePath = path.join(recorder.recordingsDir, `${sessionId}.mp4`);
+// app.get('/api/download/:sessionId', (req, res) => {
+//   try {
+//     const { sessionId } = req.params;
+//     // const filePath = path.join(recorder.recordingsDir, `${sessionId}.mp4`);
     
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'Recording not found' });
-    }
+//     if (!fs.existsSync(filePath)) {
+//       return res.status(404).json({ error: 'Recording not found' });
+//     }
 
-    res.download(filePath, `google-meet-recording-${sessionId}.mp4`);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+//     res.download(filePath, `google-meet-recording-${sessionId}.mp4`);
+//   } catch (error) {
+//     res.status(500).json({ error: error.message });
+//   }
+// });
 
 app.get('/api/health', (req, res) => {
   res.json({ 
@@ -433,7 +461,7 @@ app.use((error, req, res, next) => {
 
 app.listen(PORT, async () => {
   console.log(`[🚀] Meet Recorder Backend running on port ${PORT}`);
-  console.log(`[📁] Recordings directory: ${recorder.recordingsDir}`);
+  // console.log(`[📁] Recordings directory: ${recorder.recordingsDir}`);
   console.log(`[💻] Platform: ${os.platform()}`);
   
   // Check system requirements on startup
