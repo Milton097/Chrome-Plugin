@@ -55,12 +55,11 @@ class MeetRecorderBackend {
   constructor() {
     this.ffmpegPath = getFFmpegPath();
     this.activeSessions = new Map();
-    // this.recordingsDir = path.join(__dirname, 'recordings');
     this.init();
 
-    // if (!fs.existsSync(this.recordingsDir)) {
-    //   fs.mkdirSync(this.recordingsDir, { recursive: true });
-    // }
+    if (!fs.existsSync(this.recordingsDir)) {
+      fs.mkdirSync(this.recordingsDir, { recursive: true });
+    }
     
     this.checkFFmpegInstallation();
   }
@@ -128,11 +127,12 @@ getAudioDevices() {
 }
 
 getWindowRecordingArgs(sessionId, audioDevice) {
-  // const outputPath = path.join(this.recordingsDir, `${sessionId}.mp4`);
+  const downloadsPath = path.join(os.homedir(), 'Downloads');
+  const outputPath = path.join(downloadsPath, `${sessionId}.mp4`);
 
   const ffmpegArgs = [
     '-y',
-    
+
     // Video input: screen
     '-f', 'gdigrab',
     '-framerate', '30',
@@ -141,25 +141,26 @@ getWindowRecordingArgs(sessionId, audioDevice) {
     // Audio input (optional)
     ...(audioDevice ? ['-f', 'dshow', '-i', `audio=${audioDevice}`] : []),
 
-    // Correct mapping (not filter_complex)
+    // Input mapping
     ...(audioDevice ? ['-map', '0:v', '-map', '1:a'] : []),
 
     // Encoding
-    '-c:v', 'libvpx-vp9',           // mp4 compatible video codec
-    '-crf', '30',                   // quality
+    '-c:v', 'libvpx-vp9',
+    '-crf', '30',
     '-b:v', '1M',
     '-pix_fmt', 'yuv420p',
-    ...(audioDevice ? ['-c:a', 'libopus', '-b:a', '128k'] : ['-an']), // Use libopus for .mp4
+    ...(audioDevice ? ['-c:a', 'libopus', '-b:a', '128k'] : ['-an']),
 
-    // outputPath
+    outputPath
   ];
 
   return ffmpegArgs;
 }
 
 startFFmpegRecording(sessionId, audioDevice) {
-  // const outputPath = path.join(this.recordingsDir, `${sessionId}.mp4`);
-  
+  const downloadsPath = path.join(os.homedir(), 'Downloads');
+  const outputPath = path.join(downloadsPath, `${sessionId}.mp4`);
+
   const ffmpegArgs = [
     '-y',
     '-f', 'gdigrab',
@@ -168,7 +169,7 @@ startFFmpegRecording(sessionId, audioDevice) {
 
     ...(audioDevice ? ['-f', 'dshow', '-i', `audio=${audioDevice}`] : []),
 
-    // Ensure FFmpeg syncs timestamps
+    // Sync timestamps
     '-fflags', '+genpts',
     '-use_wallclock_as_timestamps', '1',
 
@@ -183,7 +184,7 @@ startFFmpegRecording(sessionId, audioDevice) {
 
     '-pix_fmt', 'yuv420p',
 
-    // outputPath
+    outputPath
   ];
 
   const ffmpegProcess = spawn(this.ffmpegPath, ffmpegArgs);
@@ -196,8 +197,9 @@ startFFmpegRecording(sessionId, audioDevice) {
     console.error(`[❌] FFmpeg failed:`, err);
   });
 
-  return { ffmpegProcess };
+  return { ffmpegProcess, outputPath };
 }
+
 
 async startRecording(meetUrl, sessionId, options = {}) {
   try {
@@ -219,14 +221,15 @@ async startRecording(meetUrl, sessionId, options = {}) {
     }
   }
 
-    const { ffmpegProcess } = await this.startFFmpegRecording(sessionId, audioDevice);
+    const { ffmpegProcess, outputPath } = await this.startFFmpegRecording(sessionId, audioDevice);
     this.activeSessions.set(sessionId, {
       ffmpegProcess,
       startTime: new Date(),
       meetUrl,
       emailId: options?.email_id || null,
       extensionId: options?.extension_id || null,
-      options
+      options,
+      outputPath
     });
 
     console.log(`[✅] Screen recording started successfully for session: ${sessionId}`);
@@ -280,7 +283,6 @@ async stopRecording(sessionId) {
     return {
       success: true,
       sessionId,
-      // outputPath: session.outputPath,
       duration: durationMinutes
     };
 
@@ -303,25 +305,27 @@ async stopRecording(sessionId) {
     return recordings;
   }
 
-  // getRecordingsList() {
-  //   const recordings = [];
-  //   if (fs.existsSync(this.recordingsDir)) {
-  //     const files = fs.readdirSync(this.recordingsDir);
-  //     files.forEach(file => {
-  //       if (file.endsWith('.mp4')) {
-  //         const filePath = path.join(this.recordingsDir, file);
-  //         const stats = fs.statSync(filePath);
-  //         recordings.push({
-  //           filename: file,
-  //           size: stats.size,
-  //           created: stats.birthtime,
-  //           modified: stats.mtime
-  //         });
-  //       }
-  //     });
-  //   }
-  //   return recordings;
-  // }
+getRecordingsList() {
+  const recordings = [];
+  const downloadsPath = path.join(os.homedir(), 'Downloads');
+  
+  if (fs.existsSync(downloadsPath)) {
+    const files = fs.readdirSync(downloadsPath);
+    files.forEach(file => {
+      if (file.endsWith('.mp4')) {
+        const filePath = path.join(downloadsPath, file);
+        const stats = fs.statSync(filePath);
+        recordings.push({
+          filename: file,
+          size: stats.size,
+          created: stats.birthtime,
+          modified: stats.mtime
+        });
+      }
+    });
+  }
+  return recordings;
+}
 
   // New method to check system requirements
   async checkSystemRequirements() {
@@ -427,20 +431,21 @@ app.get('/api/recordings', (req, res) => {
   }
 });
 
-// app.get('/api/download/:sessionId', (req, res) => {
-//   try {
-//     const { sessionId } = req.params;
-//     // const filePath = path.join(recorder.recordingsDir, `${sessionId}.mp4`);
-    
-//     if (!fs.existsSync(filePath)) {
-//       return res.status(404).json({ error: 'Recording not found' });
-//     }
+app.get('/api/download/:sessionId', (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const downloadsPath = path.join(os.homedir(), 'Downloads');
+    const filePath = path.join(downloadsPath, `${sessionId}.mp4`);
 
-//     res.download(filePath, `google-meet-recording-${sessionId}.mp4`);
-//   } catch (error) {
-//     res.status(500).json({ error: error.message });
-//   }
-// });
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Recording not found in Downloads folder' });
+    }
+
+    res.download(filePath, `google-meet-recording-${sessionId}.mp4`);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 app.get('/api/health', (req, res) => {
   res.json({ 
@@ -460,7 +465,6 @@ app.use((error, req, res, next) => {
 
 app.listen(PORT, async () => {
   console.log(`[🚀] Meet Recorder Backend running on port ${PORT}`);
-  // console.log(`[📁] Recordings directory: ${recorder.recordingsDir}`);
   console.log(`[💻] Platform: ${os.platform()}`);
   
   // Check system requirements on startup
