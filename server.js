@@ -3,8 +3,34 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const { exec, spawn } = require('child_process');
+const { exec, spawn, execSync } = require('child_process');
 const os = require('os');
+function getFFmpegPath() {
+  try {
+    // Try globally installed ffmpeg first
+    const ffmpegCmd = os.platform() === 'win32' ? 'where ffmpeg' : 'which ffmpeg';
+const globalPath = execSync(ffmpegCmd).toString().trim().split('\n')[0];
+if (!globalPath) throw new Error('Empty FFmpeg path');
+
+    if (fs.existsSync(globalPath)) {
+      console.log(`[✅] FFmpeg found in system path: ${globalPath}`);
+      return globalPath;
+    }
+  } catch (e) {
+    // Fallback to local static binary
+    const ffmpegFileName = os.platform() === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+    const localPath = path.join(__dirname, 'ffmpeg', ffmpegFileName);
+
+    if (fs.existsSync(localPath)) {
+      console.log(`[✅] FFmpeg found in local folder: ${localPath}`);
+      return localPath;
+    }
+  }
+
+  throw new Error('❌ FFmpeg not found. Install globally or add a static binary to /ffmpeg');
+}
+
+module.exports = getFFmpegPath;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -24,42 +50,39 @@ app.use((req, res, next) => {
   next();
 });
 
+
 class MeetRecorderBackend {
+  
   constructor() {
-    this.ffmpegPath = 'ffmpeg'; 
+    this.ffmpegPath = getFFmpegPath();
     this.activeSessions = new Map();
-    this.recordingsDir = path.join(__dirname, 'recordings');
-    this.init();
-
-    if (!fs.existsSync(this.recordingsDir)) {
-      fs.mkdirSync(this.recordingsDir, { recursive: true });
-    }
+    // this.init();
     
-    this.checkFFmpegInstallation();
+    // this.checkFFmpegInstallation();
   }
-  async init() {
-    await this.checkFFmpegPath();              // Set path if ffmpeg.exe is in local folder
-    const isFFmpegOK = await this.checkFFmpegInstallation();
+  // async init() {
+  //   // await this.checkFFmpegPath();              // Set path if ffmpeg.exe is in local folder
+  //   // const isFFmpegOK = await this.checkFFmpegInstallation();
 
-    console.log('[🔍] System check:', {
-      ffmpeg: isFFmpegOK,
-      platform: process.platform,
-      nodejs: process.version,
-    });
-  }
+  //   console.log('[🔍] System check:', {
+  //     ffmpeg: isFFmpegOK,
+  //     platform: process.platform,
+  //     nodejs: process.version,
+  //   });
+  // }
 
-async checkFFmpegPath() {
-    const localFFmpeg = path.join(__dirname, 'ffmpeg.exe');
+// async checkFFmpegPath() {
+//     const localFFmpeg = path.join(__dirname, 'ffmpeg', 'ffmpeg.exe');
 
-    try {
-      await fs.promises.access(localFFmpeg);
-      this.ffmpegPath = localFFmpeg;
-      console.log(`[✅] Found FFmpeg at: ${this.ffmpegPath}`);
-    } catch {
-      this.ffmpegPath = 'ffmpeg';
-      console.log(`[✅] Looking for FFmpeg in PATH: ${this.ffmpegPath}`);
-    }
-  }
+//     try {
+//       await fs.promises.access(localFFmpeg);
+//       this.ffmpegPath = localFFmpeg;
+//       console.log(`[✅] Found FFmpeg at: ${this.ffmpegPath}`);
+//     } catch {
+//       this.ffmpegPath = 'ffmpeg';
+//       console.log(`[✅] Looking for FFmpeg in PATH: ${this.ffmpegPath}`);
+//     }
+//   }
 
 async checkFFmpegInstallation() {
   return new Promise(resolve => {
@@ -70,8 +93,13 @@ async checkFFmpegInstallation() {
 }
 
 getAudioDevices() {
+  if (os.platform() !== 'win32') {
+  console.warn('[⚠️] Audio device listing is only supported on Windows for now.');
+  return [];
+}
+
   return new Promise((resolve, reject) => {
-    const ffmpeg = spawn('ffmpeg', ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy']);
+    const ffmpeg = spawn(this.ffmpegPath, ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy']);
     let stderr = '';
 
     ffmpeg.stderr.on('data', (data) => {
@@ -100,64 +128,55 @@ getAudioDevices() {
   });
 }
 
-getWindowRecordingArgs(sessionId, audioDevice) {
-  const outputPath = path.join(this.recordingsDir, `${sessionId}.mp4`);
+// sessionId: string
+// audioDevice: string | null
+// platform: 'win32' | 'darwin' | 'linux'
+getWindowRecordingArgs(sessionId, audioDevice, platform) {
+  const downloadsPath = path.join(os.homedir(), 'Downloads');
+  const outputPath = path.join(downloadsPath, `${sessionId}.mp4`);
 
-  const ffmpegArgs = [
-    '-y',
-    
-    // Video input: screen
-    '-f', 'gdigrab',
-    '-framerate', '30',
-    '-i', 'desktop',
+  if (platform === 'win32') {
+    return [
+      '-y',
+      '-f', 'gdigrab',
+      '-framerate', '25',
+      '-i', 'desktop',
+      ...(audioDevice ? ['-f', 'dshow', '-i', `audio=${audioDevice}`] : []),
+      '-fflags', '+genpts',
+      '-use_wallclock_as_timestamps', '1',
+      '-map', '0:v:0',
+      ...(audioDevice ? ['-map', '1:a:0'] : []),
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-crf', '23',
+      ...(audioDevice ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']),
+      '-pix_fmt', 'yuv420p',
+      outputPath
+    ];
+  }
 
-    // Audio input (optional)
-    ...(audioDevice ? ['-f', 'dshow', '-i', `audio=${audioDevice}`] : []),
+  if (platform === 'darwin') {
+    return [
+      '-y',
+      '-f', 'avfoundation',
+      '-framerate', '30',
+      '-i', audioDevice ? `1:${audioDevice}` : '1:',
+      '-fflags', '+genpts',
+      '-use_wallclock_as_timestamps', '1',
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-crf', '23',
+      ...(audioDevice ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']),
+      '-pix_fmt', 'yuv420p',
+      outputPath
+    ];
+  }
 
-    // Correct mapping (not filter_complex)
-    ...(audioDevice ? ['-map', '0:v', '-map', '1:a'] : []),
-
-    // Encoding
-    '-c:v', 'libvpx-vp9',           // mp4 compatible video codec
-    '-crf', '30',                   // quality
-    '-b:v', '1M',
-    '-pix_fmt', 'yuv420p',
-    ...(audioDevice ? ['-c:a', 'libopus', '-b:a', '128k'] : ['-an']), // Use libopus for .mp4
-
-    outputPath
-  ];
-
-  return ffmpegArgs;
+  throw new Error(`[Unsupported Platform] ${platform}. Only 'win32' and 'darwin' are currently supported.`);
 }
 
-startFFmpegRecording(sessionId, audioDevice) {
-  const outputPath = path.join(this.recordingsDir, `${sessionId}.mp4`);
-  
-  const ffmpegArgs = [
-    '-y',
-    '-f', 'gdigrab',
-    '-framerate', '25',
-    '-i', 'desktop',
-
-    ...(audioDevice ? ['-f', 'dshow', '-i', `audio=${audioDevice}`] : []),
-
-    // Ensure FFmpeg syncs timestamps
-    '-fflags', '+genpts',
-    '-use_wallclock_as_timestamps', '1',
-
-    '-map', '0:v:0',
-    ...(audioDevice ? ['-map', '1:a:0'] : []),
-
-    '-c:v', 'libx264',
-    '-preset', 'veryfast',
-    '-crf', '23',
-
-    ...(audioDevice ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']),
-
-    '-pix_fmt', 'yuv420p',
-
-    outputPath
-  ];
+startFFmpegRecording(sessionId, audioDevice, platform) {
+  const ffmpegArgs = this.getWindowRecordingArgs(sessionId, audioDevice, platform);
 
   const ffmpegProcess = spawn(this.ffmpegPath, ffmpegArgs);
 
@@ -169,21 +188,25 @@ startFFmpegRecording(sessionId, audioDevice) {
     console.error(`[❌] FFmpeg failed:`, err);
   });
 
-  return { ffmpegProcess };
+  const downloadsPath = path.join(os.homedir(), 'Downloads');
+  const outputPath = path.join(downloadsPath, `${sessionId}.mp4`);
+
+  return { ffmpegProcess, outputPath };
 }
 
-async startRecording(meetUrl, sessionId, options = {}) {
+async startRecording(meetUrl, sessionId, options = {}, platform) {
   try {
-    const ffmpegAvailable = await this.checkFFmpegInstallation();
-    if (!ffmpegAvailable) {
-      throw new Error('FFmpeg is not installed or not accessible. Please install FFmpeg and add it to your PATH.');
-    }
+    // const ffmpegAvailable = await this.checkFFmpegInstallation();
+    // if (!ffmpegAvailable) {
+    //   throw new Error('FFmpeg is not installed or not accessible. Please install FFmpeg and add it to your PATH.');
+    // }
+if (!['win32', 'darwin'].includes(platform)) {
+  throw new Error(`[Unsupported Platform] ${platform}. Only 'win32' and 'darwin' are currently supported.`);
+}
 
     console.log(`[🎬] Starting screen recording for session: ${sessionId}`);
-
-    const outputPath = path.join(this.recordingsDir, `${sessionId}.mp4`);
-
-  let audioDevice = options.audioDevice;
+    options = options || {};
+    let audioDevice = options.audioDevice;
   if (!audioDevice) {
     const devices = await this.getAudioDevices();
     if (devices.length > 0) {
@@ -192,18 +215,20 @@ async startRecording(meetUrl, sessionId, options = {}) {
     }
   }
 
-    const { ffmpegProcess } = await this.startFFmpegRecording(sessionId, audioDevice);
+    const { ffmpegProcess, outputPath } = await this.startFFmpegRecording(sessionId, audioDevice, platform);
     this.activeSessions.set(sessionId, {
       ffmpegProcess,
       startTime: new Date(),
       meetUrl,
       emailId: options?.email_id || null,
       extensionId: options?.extension_id || null,
-      options
+      options,
+      outputPath,
+      platform
     });
 
     console.log(`[✅] Screen recording started successfully for session: ${sessionId}`);
-    return { success: true, sessionId, outputPath };
+    return { success: true, sessionId };
 
   } catch (error) {
     console.error(`[❌] Error starting recording:`, error);
@@ -247,12 +272,12 @@ async stopRecording(sessionId) {
     const durationMinutes = Math.floor(duration / 60000);
 
     this.activeSessions.delete(sessionId);
-    console.log(`[✅] Recording stopped. Duration: ${durationMinutes} minutes`);
+
+    console.log(`[✅] Recording stopped successfully. Duration: ${durationMinutes} minutes`);
 
     return {
       success: true,
       sessionId,
-      outputPath: session.outputPath,
       duration: durationMinutes
     };
 
@@ -275,69 +300,71 @@ async stopRecording(sessionId) {
     return recordings;
   }
 
-  getRecordingsList() {
-    const recordings = [];
-    if (fs.existsSync(this.recordingsDir)) {
-      const files = fs.readdirSync(this.recordingsDir);
-      files.forEach(file => {
-        if (file.endsWith('.mp4')) {
-          const filePath = path.join(this.recordingsDir, file);
-          const stats = fs.statSync(filePath);
-          recordings.push({
-            filename: file,
-            size: stats.size,
-            created: stats.birthtime,
-            modified: stats.mtime
-          });
-        }
-      });
-    }
-    return recordings;
+getRecordingsList() {
+  const recordings = [];
+  const downloadsPath = path.join(os.homedir(), 'Downloads');
+  
+  if (fs.existsSync(downloadsPath)) {
+    const files = fs.readdirSync(downloadsPath);
+    files.forEach(file => {
+      if (file.endsWith('.mp4')) {
+        const filePath = path.join(downloadsPath, file);
+        const stats = fs.statSync(filePath);
+        recordings.push({
+          filename: file,
+          size: stats.size,
+          created: stats.birthtime,
+          modified: stats.mtime
+        });
+      }
+    });
   }
+  return recordings;
+}
 
-  // New method to check system requirements
-  async checkSystemRequirements() {
-    const requirements = {
-      ffmpeg: false,
-      audioDevices: [],
-      platform: os.platform(),
-      nodejs: process.version
-    };
+//   // New method to check system requirements
+//   async checkSystemRequirements() {
+//     const requirements = {
+//       ffmpeg: false,
+//       audioDevices: [],
+//       platform: os.platform(),
+//       nodejs: process.version
+//     };
 
-    // Check FFmpeg
-    requirements.ffmpeg = await this.checkFFmpegInstallation();
+//     // Check FFmpeg
+//     requirements.ffmpeg = await this.checkFFmpegInstallation();
     
-    // Check audio devices
-    if (requirements.ffmpeg) {
-      requirements.audioDevices = await this.getAudioDevices();
-    }
+//     // Check audio devices
+//     if (requirements.ffmpeg) {
+//       requirements.audioDevices = await this.getAudioDevices();
+//     }
 
-    return requirements;
-  }
+//     return requirements;
+//   }
 }
 
 const recorder = new MeetRecorderBackend();
 
 // API Routes
-app.get('/api/system-check', async (req, res) => {
-  try {
-    const requirements = await recorder.checkSystemRequirements();
-    res.status(200).json({
-      success: true,
-      ffmpegPath: recorder.ffmpegPath,
-      audioDevices: requirements.audioDevices,
-      screenOnly: requirements.audioDevices.length === 0,
-      platform: requirements.platform,
-      nodejs: requirements.nodejs
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+// app.get('/api/system-check', async (req, res) => {
+//   try {
+//     const requirements = await recorder.checkSystemRequirements();
+//     res.status(200).json({
+//       success: true,
+//       ffmpegPath: recorder.ffmpegPath,
+//       audioDevices: requirements.audioDevices,
+//       screenOnly: requirements.audioDevices.length === 0,
+//       platform: requirements.platform,
+//       nodejs: requirements.nodejs
+//     });
+//   } catch (error) {
+//     res.status(500).json({ error: error.message });
+//   }
+// });
 
 app.post('/api/start-recording', async (req, res) => {
   try {
-    const { meetUrl, sessionId, options } = req.body;
+    const { meetUrl, sessionId, options, platform } = req.body;
     
     if (!meetUrl || !sessionId) {
       return res.status(400).json({ 
@@ -345,7 +372,7 @@ app.post('/api/start-recording', async (req, res) => {
       });
     }
 
-    const result = await recorder.startRecording(meetUrl, sessionId, options);
+    const result = await recorder.startRecording(meetUrl, sessionId, options, platform);
     res.json(result);
   } catch (error) {
     console.error('[❌] Start recording error:', error);
@@ -402,10 +429,11 @@ app.get('/api/recordings', (req, res) => {
 app.get('/api/download/:sessionId', (req, res) => {
   try {
     const { sessionId } = req.params;
-    const filePath = path.join(recorder.recordingsDir, `${sessionId}.mp4`);
-    
+    const downloadsPath = path.join(os.homedir(), 'Downloads');
+    const filePath = path.join(downloadsPath, `${sessionId}.mp4`);
+
     if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'Recording not found' });
+      return res.status(404).json({ error: 'Recording not found in Downloads folder' });
     }
 
     res.download(filePath, `google-meet-recording-${sessionId}.mp4`);
@@ -432,12 +460,11 @@ app.use((error, req, res, next) => {
 
 app.listen(PORT, async () => {
   console.log(`[🚀] Meet Recorder Backend running on port ${PORT}`);
-  console.log(`[📁] Recordings directory: ${recorder.recordingsDir}`);
   console.log(`[💻] Platform: ${os.platform()}`);
   
   // Check system requirements on startup
-  const requirements = await recorder.checkSystemRequirements();
-  console.log(`[🔍] System check:`, requirements);
+  // const requirements = await recorder.checkSystemRequirements();
+  // console.log(`[🔍] System check:`, requirements);
 });
 app.post('/api/ping', (req, res) => {
   res.json({ success: true, message: 'Backend is alive!' });
