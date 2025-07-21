@@ -247,8 +247,7 @@ async stopRecording(sessionId) {
     const durationMinutes = Math.floor(duration / 60000);
 
     this.activeSessions.delete(sessionId);
-
-    console.log(`[✅] Recording stopped successfully. Duration: ${durationMinutes} minutes`);
+    console.log(`[✅] Recording stopped. Duration: ${durationMinutes} minutes`);
 
     return {
       success: true,
