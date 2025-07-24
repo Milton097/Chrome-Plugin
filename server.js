@@ -1,42 +1,18 @@
-// Improved backend with better error handling and FFmpeg detection
+// Enhanced Global server for Render deployment - handles API and session management with client forwarding
 const express = require('express');
 const cors = require('cors');
-const fs = require('fs');
+const WebSocket = require('ws');
+const http = require('http');
 const path = require('path');
-const { exec, spawn, execSync } = require('child_process');
-const os = require('os');
-function getFFmpegPath() {
-  try {
-    // Try globally installed ffmpeg first
-    const ffmpegCmd = os.platform() === 'win32' ? 'where ffmpeg' : 'which ffmpeg';
-const globalPath = execSync(ffmpegCmd).toString().trim().split('\n')[0];
-if (!globalPath) throw new Error('Empty FFmpeg path');
-
-    if (fs.existsSync(globalPath)) {
-      console.log(`[✅] FFmpeg found in system path: ${globalPath}`);
-      return globalPath;
-    }
-  } catch (e) {
-    // Fallback to local static binary
-    const ffmpegFileName = os.platform() === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
-    const localPath = path.join(__dirname, 'ffmpeg', ffmpegFileName);
-
-    if (fs.existsSync(localPath)) {
-      console.log(`[✅] FFmpeg found in local folder: ${localPath}`);
-      return localPath;
-    }
-  }
-
-  throw new Error('❌ FFmpeg not found. Install globally or add a static binary to /ffmpeg');
-}
-
-module.exports = getFFmpegPath;
 
 const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
 const PORT = process.env.PORT || 3000;
 
 app.use(cors({
-  origin: ['https://meet.google.com', 'chrome-extension://*'],
+  origin: ['https://meet.google.com', 'chrome-extension://*', 'http://localhost:*', 'https://*.onrender.com'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -50,329 +26,369 @@ app.use((req, res, next) => {
   next();
 });
 
-
-class MeetRecorderBackend {
-  
+class GlobalMeetRecorderBackend {
   constructor() {
-    this.ffmpegPath = getFFmpegPath();
     this.activeSessions = new Map();
-    // this.init();
+    this.connectedClients = new Map(); // WebSocket connections to local clients
+    this.clientHealth = new Map(); // Track client health status
+    this.init();
+  }
+
+  init() {
+    console.log('[🌐] Global server initialized');
+    console.log('[🔍] System check:', {
+      platform: process.platform,
+      nodejs: process.version,
+      environment: 'GLOBAL_SERVER',
+      port: PORT
+    });
+
+    // Health check interval for connected clients
+    setInterval(() => {
+      this.performClientHealthCheck();
+    }, 30000); // Every 30 seconds
+  }
+
+  // Register a local client (user's machine)
+  registerClient(ws, clientData) {
+    const { clientId, platform, hostname } = clientData;
     
-    // this.checkFFmpegInstallation();
-  }
-  // async init() {
-  //   // await this.checkFFmpegPath();              // Set path if ffmpeg.exe is in local folder
-  //   // const isFFmpegOK = await this.checkFFmpegInstallation();
-
-  //   console.log('[🔍] System check:', {
-  //     ffmpeg: isFFmpegOK,
-  //     platform: process.platform,
-  //     nodejs: process.version,
-  //   });
-  // }
-
-// async checkFFmpegPath() {
-//     const localFFmpeg = path.join(__dirname, 'ffmpeg', 'ffmpeg.exe');
-
-//     try {
-//       await fs.promises.access(localFFmpeg);
-//       this.ffmpegPath = localFFmpeg;
-//       console.log(`[✅] Found FFmpeg at: ${this.ffmpegPath}`);
-//     } catch {
-//       this.ffmpegPath = 'ffmpeg';
-//       console.log(`[✅] Looking for FFmpeg in PATH: ${this.ffmpegPath}`);
-//     }
-//   }
-
-async checkFFmpegInstallation() {
-  return new Promise(resolve => {
-    const check = spawn(this.ffmpegPath, ['-version']);
-    check.on('error', () => resolve(false));
-    check.on('exit', code => resolve(code === 0));
-  });
-}
-
-getAudioDevices() {
-  if (os.platform() !== 'win32') {
-  console.warn('[⚠️] Audio device listing is only supported on Windows for now.');
-  return [];
-}
-
-  return new Promise((resolve, reject) => {
-    const ffmpeg = spawn(this.ffmpegPath, ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy']);
-    let stderr = '';
-
-    ffmpeg.stderr.on('data', (data) => {
-      stderr += data.toString();
+    this.connectedClients.set(clientId, {
+      ws,
+      connected: true,
+      lastPing: Date.now(),
+      platform,
+      hostname,
+      registeredAt: new Date()
     });
 
-    ffmpeg.on('close', () => {
-      console.log('[🔍] Raw FFmpeg output:\n', stderr);
-
-      const lines = stderr.split('\n');
-      const audioDevices = [];
-
-      lines.forEach((line) => {
-        const trimmed = line.trim();
-        const match = trimmed.match(/"([^"]+)"\s+\(audio\)/i);
-        if (match) {
-          audioDevices.push(match[1]);
-        }
-      });
-
-      console.log('[🎤] Detected audio devices:', audioDevices);
-      resolve(audioDevices);
+    this.clientHealth.set(clientId, {
+      status: 'healthy',
+      lastHealthCheck: Date.now(),
+      ffmpegAvailable: false
     });
 
-    ffmpeg.on('error', reject);
-  });
-}
-
-// sessionId: string
-// audioDevice: string | null
-// platform: 'win32' | 'darwin' | 'linux'
-getWindowRecordingArgs(sessionId, audioDevice, platform) {
-  const downloadsPath = path.join(os.homedir(), 'Downloads');
-  const outputPath = path.join(downloadsPath, `${sessionId}.mp4`);
-
-  if (platform === 'win32') {
-    return [
-      '-y',
-      '-f', 'gdigrab',
-      '-framerate', '25',
-      '-i', 'desktop',
-      ...(audioDevice ? ['-f', 'dshow', '-i', `audio=${audioDevice}`] : []),
-      '-fflags', '+genpts',
-      '-use_wallclock_as_timestamps', '1',
-      '-map', '0:v:0',
-      ...(audioDevice ? ['-map', '1:a:0'] : []),
-      '-c:v', 'libx264',
-      '-preset', 'veryfast',
-      '-crf', '23',
-      ...(audioDevice ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']),
-      '-pix_fmt', 'yuv420p',
-      outputPath
-    ];
+    console.log(`[✅] Client registered: ${clientId} (${platform})`);
+    
+    // Immediately check client system requirements
+    this.checkClientSystemRequirements(clientId).catch(console.error);
   }
 
-  if (platform === 'darwin') {
-    return [
-      '-y',
-      '-f', 'avfoundation',
-      '-framerate', '30',
-      '-i', audioDevice ? `1:${audioDevice}` : '1:',
-      '-fflags', '+genpts',
-      '-use_wallclock_as_timestamps', '1',
-      '-c:v', 'libx264',
-      '-preset', 'ultrafast',
-      '-crf', '23',
-      ...(audioDevice ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']),
-      '-pix_fmt', 'yuv420p',
-      outputPath
-    ];
+  // Remove disconnected client
+  removeClient(clientId) {
+    this.connectedClients.delete(clientId);
+    this.clientHealth.delete(clientId);
+    
+    // Clean up any active sessions for this client
+    for (const [sessionId, session] of this.activeSessions) {
+      if (session.clientId === clientId) {
+        session.status = 'client_disconnected';
+        console.log(`[⚠️] Session ${sessionId} marked as disconnected due to client removal`);
+      }
+    }
+    
+    console.log(`[❌] Client removed: ${clientId}`);
   }
 
-  throw new Error(`[Unsupported Platform] ${platform}. Only 'win32' and 'darwin' are currently supported.`);
-}
-
-startFFmpegRecording(sessionId, audioDevice, platform) {
-  const ffmpegArgs = this.getWindowRecordingArgs(sessionId, audioDevice, platform);
-
-  const ffmpegProcess = spawn(this.ffmpegPath, ffmpegArgs);
-
-  ffmpegProcess.stderr.on('data', (data) => {
-    console.log(`[FFmpeg] ${data.toString()}`);
-  });
-
-  ffmpegProcess.on('error', (err) => {
-    console.error(`[❌] FFmpeg failed:`, err);
-  });
-
-  const downloadsPath = path.join(os.homedir(), 'Downloads');
-  const outputPath = path.join(downloadsPath, `${sessionId}.mp4`);
-
-  return { ffmpegProcess, outputPath };
-}
-
-async startRecording(meetUrl, sessionId, options = {}, platform) {
-  try {
-    // const ffmpegAvailable = await this.checkFFmpegInstallation();
-    // if (!ffmpegAvailable) {
-    //   throw new Error('FFmpeg is not installed or not accessible. Please install FFmpeg and add it to your PATH.');
-    // }
-if (!['win32', 'darwin'].includes(platform)) {
-  throw new Error(`[Unsupported Platform] ${platform}. Only 'win32' and 'darwin' are currently supported.`);
-}
-
-    console.log(`[🎬] Starting screen recording for session: ${sessionId}`);
-    options = options || {};
-    let audioDevice = options.audioDevice;
-  if (!audioDevice) {
-    const devices = await this.getAudioDevices();
-    if (devices.length > 0) {
-      audioDevice = devices[0]; // fallback
-      console.log(`[🎤] Using fallback audio device: ${audioDevice}`);
+  // Perform health check on all connected clients
+  async performClientHealthCheck() {
+    for (const [clientId, client] of this.connectedClients) {
+      try {
+        const healthData = await this.sendToLocalClient(clientId, 'SYSTEM_CHECK', {}, 10000); // 10s timeout
+        
+        this.clientHealth.set(clientId, {
+          status: 'healthy',
+          lastHealthCheck: Date.now(),
+          ffmpegAvailable: healthData.ffmpeg || false,
+          audioDevices: healthData.audioDevices || [],
+          platform: healthData.platform
+        });
+        
+        console.log(`[💚] Client ${clientId} health check passed`);
+      } catch (error) {
+        console.warn(`[💛] Client ${clientId} health check failed:`, error.message);
+        
+        this.clientHealth.set(clientId, {
+          status: 'unhealthy',
+          lastHealthCheck: Date.now(),
+          error: error.message
+        });
+      }
     }
   }
 
-    const { ffmpegProcess, outputPath } = await this.startFFmpegRecording(sessionId, audioDevice, platform);
-    this.activeSessions.set(sessionId, {
-      ffmpegProcess,
-      startTime: new Date(),
-      meetUrl,
-      emailId: options?.email_id || null,
-      extensionId: options?.extension_id || null,
-      options,
-      outputPath,
-      platform
-    });
+  // Send command to local client with improved error handling
+  async sendToLocalClient(clientId, command, data = {}, timeout = 30000) {
+    const client = this.connectedClients.get(clientId);
+    if (!client || !client.connected) {
+      throw new Error(`Local client ${clientId} not connected`);
+    }
 
-    console.log(`[✅] Screen recording started successfully for session: ${sessionId}`);
-    return { success: true, sessionId };
+    if (client.ws.readyState !== WebSocket.OPEN) {
+      throw new Error(`Local client ${clientId} WebSocket not ready`);
+    }
 
-  } catch (error) {
-    console.error(`[❌] Error starting recording:`, error);
-    throw error;
-  }
-}
+    return new Promise((resolve, reject) => {
+      const messageId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const message = {
+        id: messageId,
+        command,
+        data,
+        timestamp: new Date().toISOString()
+      };
 
-async stopRecording(sessionId) {
-  try {
-    const session = this.activeSessions.get(sessionId);
-    if (!session) throw new Error(`Session ${sessionId} not found`);
+      let responseReceived = false;
 
-    console.log(`[🛑] Stopping recording for session: ${sessionId}`);
+      // Set up response handler
+      const responseHandler = (event) => {
+        try {
+          const response = JSON.parse(event.data);
+          if (response.type === 'RESPONSE' && response.id === messageId) {
+            responseReceived = true;
+            client.ws.removeEventListener('message', responseHandler);
+            
+            if (response.success) {
+              resolve(response.data);
+            } else {
+              reject(new Error(response.error || 'Unknown client error'));
+            }
+          }
+        } catch (e) {
+          // Ignore parsing errors for other messages
+        }
+      };
 
-    if (session.ffmpegProcess) {
-      // Preferred way: send 'q' to gracefully stop FFmpeg
-      if (session.ffmpegProcess.stdin) {
-        session.ffmpegProcess.stdin.write('q');
+      client.ws.addEventListener('message', responseHandler);
+      
+      // Send command
+      try {
+        client.ws.send(JSON.stringify(message));
+        console.log(`[📤] Sent command ${command} to client ${clientId}`);
+      } catch (sendError) {
+        client.ws.removeEventListener('message', responseHandler);
+        reject(new Error(`Failed to send command to client: ${sendError.message}`));
+        return;
       }
 
-      // Wait for FFmpeg to exit
-      await new Promise(resolve => {
-        let exited = false;
-        session.ffmpegProcess.on('exit', () => {
-          exited = true;
-          resolve();
-        });
+      // Timeout handler
+      const timeoutId = setTimeout(() => {
+        if (!responseReceived) {
+          client.ws.removeEventListener('message', responseHandler);
+          reject(new Error(`Local client response timeout (${timeout}ms)`));
+        }
+      }, timeout);
 
-        // Fallback force kill after 5s if not exited
-        setTimeout(() => {
-          if (!exited) {
-            console.warn(`[⚠️] FFmpeg did not exit, forcing kill.`);
-            session.ffmpegProcess.kill('SIGKILL');
-            resolve();
-          }
-        }, 5000);
-      });
+      // Clean up timeout when response is received
+      const originalResolve = resolve;
+      const originalReject = reject;
+      
+      resolve = (value) => {
+        clearTimeout(timeoutId);
+        originalResolve(value);
+      };
+      
+      reject = (error) => {
+        clearTimeout(timeoutId);
+        originalReject(error);
+      };
+    });
+  }
+
+  // Find best available client for recording
+  findBestClient() {
+    let bestClient = null;
+    let bestScore = -1;
+
+    for (const [clientId, health] of this.clientHealth) {
+      if (health.status !== 'healthy' || !health.ffmpegAvailable) continue;
+      
+      const client = this.connectedClients.get(clientId);
+      if (!client || !client.connected) continue;
+
+      // Score based on various factors
+      let score = 100;
+      
+      // Prefer clients with fewer active sessions
+      const activeSessions = Array.from(this.activeSessions.values())
+        .filter(s => s.clientId === clientId && s.status === 'recording').length;
+      score -= (activeSessions * 10);
+      
+      // Prefer clients with more audio devices
+      score += (health.audioDevices?.length || 0);
+      
+      // Prefer recent health checks
+      const timeSinceHealthCheck = Date.now() - health.lastHealthCheck;
+      if (timeSinceHealthCheck < 60000) score += 10; // Within last minute
+      
+      if (score > bestScore) {
+        bestScore = score;
+        bestClient = clientId;
+      }
     }
 
-    const duration = new Date() - session.startTime;
-    const durationMinutes = Math.floor(duration / 60000);
-
-    this.activeSessions.delete(sessionId);
-
-    console.log(`[✅] Recording stopped successfully. Duration: ${durationMinutes} minutes`);
-
-    return {
-      success: true,
-      sessionId,
-      duration: durationMinutes
-    };
-
-  } catch (error) {
-    console.error(`[❌] Error stopping recording:`, error);
-    throw error;
+    return bestClient;
   }
-}
+
+  async startRecording(meetUrl, sessionId, clientId, options = {}) {
+    try {
+      // If no specific client requested, find the best available one
+      if (!clientId) {
+        clientId = this.findBestClient();
+        if (!clientId) {
+          throw new Error('No healthy clients available for recording');
+        }
+      }
+
+      console.log(`[🎬] Starting recording for session: ${sessionId} on client: ${clientId}`);
+      
+      // Send start command to local client
+      const result = await this.sendToLocalClient(clientId, 'START_RECORDING', {
+        meetUrl,
+        sessionId,
+        options
+      });
+
+      // Store session info
+      this.activeSessions.set(sessionId, {
+        clientId,
+        meetUrl,
+        startTime: new Date(),
+        options,
+        status: 'recording'
+      });
+
+      return { success: true, sessionId, ...result };
+    } catch (error) {
+      console.error(`[❌] Error starting recording:`, error);
+      throw error;
+    }
+  }
+
+  async stopRecording(sessionId) {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) {
+      return { success: false, message: 'No active recording found' };
+    }
+
+    try {
+      console.log(`[🛑] Stopping recording for session: ${sessionId}`);
+
+      // Send stop command to local client
+      const result = await this.sendToLocalClient(session.clientId, 'STOP_RECORDING', {
+        sessionId
+      });
+
+      // Update session status
+      session.status = 'stopped';
+      session.endTime = new Date();
+
+      return { success: true, sessionId, ...result };
+    } catch (error) {
+      console.error(`[❌] Error stopping recording:`, error);
+      throw error;
+    }
+  }
 
   async getActiveRecordings() {
     const recordings = [];
     for (const [sessionId, session] of this.activeSessions) {
-      recordings.push({
-        sessionId,
-        meetUrl: session.meetUrl,
-        startTime: session.startTime,
-        duration: new Date() - session.startTime
-      });
+      if (session.status === 'recording') {
+        recordings.push({
+          sessionId,
+          clientId: session.clientId,
+          meetUrl: session.meetUrl,
+          startTime: session.startTime,
+          duration: new Date() - session.startTime
+        });
+      }
     }
     return recordings;
   }
 
-getRecordingsList() {
-  const recordings = [];
-  const downloadsPath = path.join(os.homedir(), 'Downloads');
-  
-  if (fs.existsSync(downloadsPath)) {
-    const files = fs.readdirSync(downloadsPath);
-    files.forEach(file => {
-      if (file.endsWith('.mp4')) {
-        const filePath = path.join(downloadsPath, file);
-        const stats = fs.statSync(filePath);
-        recordings.push({
-          filename: file,
-          size: stats.size,
-          created: stats.birthtime,
-          modified: stats.mtime
-        });
-      }
-    });
+  async checkClientSystemRequirements(clientId) {
+    try {
+      const requirements = await this.sendToLocalClient(clientId, 'SYSTEM_CHECK');
+      return requirements;
+    } catch (error) {
+      return { error: error.message };
+    }
   }
-  return recordings;
 }
 
-//   // New method to check system requirements
-//   async checkSystemRequirements() {
-//     const requirements = {
-//       ffmpeg: false,
-//       audioDevices: [],
-//       platform: os.platform(),
-//       nodejs: process.version
-//     };
+const recorder = new GlobalMeetRecorderBackend();
 
-//     // Check FFmpeg
-//     requirements.ffmpeg = await this.checkFFmpegInstallation();
-    
-//     // Check audio devices
-//     if (requirements.ffmpeg) {
-//       requirements.audioDevices = await this.getAudioDevices();
-//     }
+// WebSocket connection handling
+wss.on('connection', (ws, req) => {
+  console.log('[🔌] New WebSocket connection');
+  
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+      
+      switch (data.type) {
+        case 'REGISTER_CLIENT':
+          recorder.registerClient(ws, data);
+          ws.send(JSON.stringify({
+            type: 'REGISTRATION_SUCCESS',
+            clientId: data.clientId
+          }));
+          break;
+          
+        case 'PING':
+          ws.send(JSON.stringify({ type: 'PONG', timestamp: Date.now() }));
+          break;
+          
+        case 'RESPONSE':
+          // Response from local client - handled by sendToLocalClient promise
+          break;
+          
+        default:
+          console.log('[📨] Unknown message type:', data.type);
+      }
+    } catch (error) {
+      console.error('[❌] WebSocket message error:', error);
+    }
+  });
 
-//     return requirements;
-//   }
-}
-
-const recorder = new MeetRecorderBackend();
+  ws.on('close', () => {
+    console.log('[🔌] WebSocket connection closed');
+    // Remove client from connected clients
+    for (const [clientId, client] of recorder.connectedClients) {
+      if (client.ws === ws) {
+        recorder.connectedClients.delete(clientId);
+        console.log(`[❌] Client disconnected: ${clientId}`);
+        break;
+      }
+    }
+  });
+});
 
 // API Routes
-// app.get('/api/system-check', async (req, res) => {
-//   try {
-//     const requirements = await recorder.checkSystemRequirements();
-//     res.status(200).json({
-//       success: true,
-//       ffmpegPath: recorder.ffmpegPath,
-//       audioDevices: requirements.audioDevices,
-//       screenOnly: requirements.audioDevices.length === 0,
-//       platform: requirements.platform,
-//       nodejs: requirements.nodejs
-//     });
-//   } catch (error) {
-//     res.status(500).json({ error: error.message });
-//   }
-// });
+app.get('/api/system-check/:clientId', async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const requirements = await recorder.checkClientSystemRequirements(clientId);
+    res.status(200).json({
+      success: true,
+      clientId,
+      ...requirements
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 app.post('/api/start-recording', async (req, res) => {
   try {
-    const { meetUrl, sessionId, options, platform } = req.body;
+    const { meetUrl, sessionId, clientId, options } = req.body;
     
-    if (!meetUrl || !sessionId) {
+    if (!meetUrl || !sessionId || !clientId) {
       return res.status(400).json({ 
-        error: 'meetUrl and sessionId are required' 
+        error: 'meetUrl, sessionId, and clientId are required' 
       });
     }
 
-    const result = await recorder.startRecording(meetUrl, sessionId, options, platform);
+    const result = await recorder.startRecording(meetUrl, sessionId, clientId, options);
     res.json(result);
   } catch (error) {
     console.error('[❌] Start recording error:', error);
@@ -398,45 +414,24 @@ app.post('/api/stop-recording', async (req, res) => {
 
 app.get('/api/active-recordings', async (req, res) => {
   try {
-    const recordings = [];
+    const recordings = await recorder.getActiveRecordings();
+    res.json({ recordings });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
-    for (const [sessionId, session] of recorder.activeSessions.entries()) {
-      recordings.push({
-        sessionId,
-        meetUrl: session.meetUrl,
-        startTime: session.startTime,
-        duration: new Date() - session.startTime,
-        emailId: session.emailId,
-        extensionId: session.extensionId
+app.get('/api/connected-clients', (req, res) => {
+  try {
+    const clients = [];
+    for (const [clientId, client] of recorder.connectedClients) {
+      clients.push({
+        clientId,
+        connected: client.connected,
+        lastPing: client.lastPing
       });
     }
-    res.json({ recordings });
-
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/recordings', (req, res) => {
-  try {
-    const recordings = recorder.getRecordingsList();
-    res.json({ recordings });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/download/:sessionId', (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const downloadsPath = path.join(os.homedir(), 'Downloads');
-    const filePath = path.join(downloadsPath, `${sessionId}.mp4`);
-
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'Recording not found in Downloads folder' });
-    }
-
-    res.download(filePath, `google-meet-recording-${sessionId}.mp4`);
+    res.json({ clients });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -446,10 +441,15 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
-    platform: os.platform(),
+    platform: process.platform,
     activeSessions: recorder.activeSessions.size,
-    ffmpegPath: recorder.ffmpegPath
+    connectedClients: recorder.connectedClients.size,
+    environment: 'GLOBAL_SERVER'
   });
+});
+
+app.post('/api/ping', (req, res) => {
+  res.json({ success: true, message: 'Global backend is alive!' });
 });
 
 // Error handling middleware
@@ -458,25 +458,10 @@ app.use((error, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-app.listen(PORT, async () => {
-  console.log(`[🚀] Meet Recorder Backend running on port ${PORT}`);
-  console.log(`[💻] Platform: ${os.platform()}`);
-  
-  // Check system requirements on startup
-  // const requirements = await recorder.checkSystemRequirements();
-  // console.log(`[🔍] System check:`, requirements);
-});
-app.post('/api/ping', (req, res) => {
-  res.json({ success: true, message: 'Backend is alive!' });
+server.listen(PORT, () => {
+  console.log(`[🚀] Global Meet Recorder Backend running on port ${PORT}`);
+  console.log(`[💻] Platform: ${process.platform}`);
+  console.log(`[🌐] Environment: GLOBAL_SERVER`);
 });
 
-app.get('/api/audio-devices', async (req, res) => {
-  try {
-    const devices = await recorder.getAudioDevices();
-    res.status(200).json({ success: true, devices });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-module.exports = { MeetRecorderBackend };
+module.exports = { GlobalMeetRecorderBackend };
