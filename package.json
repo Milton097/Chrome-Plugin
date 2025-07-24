@@ -1,12 +1,33 @@
 {
-  "name": "chrome-plugin-backend",
+  "name": "meet-recorder-split",
   "version": "1.0.0",
+  "description": "Split architecture Meet recorder with global server and local client",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "start:global": "node server.js",
+    "start:local": "node local-client.js",
+    "dev:global": "nodemon server.js",
+    "dev:local": "nodemon local-client.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "express": "^4.18.2"
-  }
+    "express": "^4.18.2",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "keywords": [
+    "meet",
+    "recorder",
+    "ffmpeg",
+    "screen-recording",
+    "google-meet"
+  ],
+  "author": "HHC",
+  "license": "MIT"
 }
