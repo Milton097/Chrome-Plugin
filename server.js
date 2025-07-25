@@ -321,7 +321,7 @@ const recorder = new GlobalMeetRecorderBackend();
 wss.on('connection', (ws, req) => {
   console.log('[🔌] New WebSocket connection');
   
-  ws.on('message', (message) => {
+ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
       
@@ -332,6 +332,49 @@ wss.on('connection', (ws, req) => {
             type: 'REGISTRATION_SUCCESS',
             clientId: data.clientId
           }));
+          break;
+          
+        case 'FORWARD_COMMAND':
+          // Handle command forwarding from local client to global server
+          const { command, data: commandData, clientId, id } = data;
+          
+          // Execute the command and send response back
+          (async () => {
+            try {
+              let result;
+              
+              switch (command) {
+                case 'START_RECORDING':
+                  result = await recorder.startRecording(
+                    commandData.meetUrl, 
+                    commandData.sessionId, 
+                    commandData.clientId || clientId, 
+                    commandData.options
+                  );
+                  break;
+                  
+                case 'STOP_RECORDING':
+                  result = await recorder.stopRecording(commandData.sessionId);
+                  break;
+                  
+                default:
+                  throw new Error(`Unknown forwarded command: ${command}`);
+              }
+              
+              ws.send(JSON.stringify({
+                id,
+                success: true,
+                data: result
+              }));
+              
+            } catch (error) {
+              ws.send(JSON.stringify({
+                id,
+                success: false,
+                error: error.message
+              }));
+            }
+          })();
           break;
           
         case 'PING':
@@ -349,7 +392,6 @@ wss.on('connection', (ws, req) => {
       console.error('[❌] WebSocket message error:', error);
     }
   });
-
   ws.on('close', () => {
     console.log('[🔌] WebSocket connection closed');
     // Remove client from connected clients
